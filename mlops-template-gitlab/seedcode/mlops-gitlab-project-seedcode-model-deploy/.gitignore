@@ -1,0 +1,33 @@
+name_servers
+Pipfile*
+infra/feature/errored.tfstate
+
+# terraform related local files
+*.terraform.lock.*
+terraform.tfplan
+terraform.tfstate
+.terraform/
+./*.tfstate
+
+# Environments
+env
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# local files
+.DS_Store
+*.backup
+*.DS_Store
+*.log
+*.bak
+*~
+.*.swp
+.project
+.idea/
+.vscode/
+*__pycache__*

@@ -1,0 +1,842 @@
+# make usage of terraform pipeline provided by the enablers team
+include:
+  - project: templates/infra-pipelines
+    ref: tf-1.1.6
+    file:
+      - terraform-gitlab-pipeline.yml
+
+variables:
+  TF_VAR_aws_region: $AWS_REGION
+  TF_VAR_aws_account_number: $AWS_ACCOUNT_NUMBER_DEV # mostly non-prod. Gets overwritten for prod jobs
+  TF_VAR_aws_deployment_role: $AWS_DEPLOYMENT_ROLE_DEV # mostly non-prod. Gets overwritten for prod jobs
+  TF_VAR_branch: $CI_COMMIT_REF_SLUG
+  DOCKER_IMAGE: registry.source.tui/templates/docker/aws-deploy:03e35850
+  DOCKER_HOST: "tcp://docker:2375"
+  DOCKER_TLS_CERTDIR: ""
+  DOCKER_DRIVER: overlay2
+  RUNNER_ROLE: "arn:aws:iam::$TF_VAR_aws_account_number:role/$TF_VAR_aws_deployment_role"
+  SERVICE_ROLE_NAME: $SERVICE_ROLE_NAME
+  SAGEMAKER_ROLE: "arn:aws:iam::$TF_VAR_aws_account_number:role/service-role/$SERVICE_ROLE_NAME"
+  DEPLOYMENT_FOLDER: $CI_PROJECT_DIR/src/model_deploy/stack
+stages:
+  #terraform
+  - init
+  - validate
+  - plan
+  - deploy-infra
+  #sagemaker
+  - build
+  - create
+  - train
+  - test
+  - scaling
+  - deploy
+
+# Init terraform
+init:non-prod:
+  extends: .tf_init
+  stage: init
+  variables:
+    TF_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_PROJECT_NAME}-${CI_COMMIT_REF_SLUG}"
+    ENVIRONMENT: $CI_COMMIT_REF_SLUG
+  only:
+    refs:
+      - branches
+  except:
+    - main
+  tags:
+    - dev
+    - mll
+
+init:prod:
+  extends: .tf_init
+  stage: init
+  variables:
+    TF_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_PROJECT_NAME}-${CI_COMMIT_REF_SLUG}-prod"
+    ENVIRONMENT: prod
+    TF_VAR_aws_account_number: $AWS_ACCOUNT_NUMBER_PROD
+    TF_VAR_aws_deployment_role: $AWS_DEPLOYMENT_ROLE_PROD
+    RUNNER_ROLE: "arn:aws:iam::$AWS_ACCOUNT_NUMBER_PROD:role/$AWS_DEPLOYMENT_ROLE_PROD"
+  only:
+    refs:
+      - main
+  tags:
+    - prod
+    - mll
+
+tf-validate:non-prod:
+  extends: .tf_validate
+  stage: validate
+  variables:
+    TF_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_PROJECT_NAME}-${CI_COMMIT_REF_SLUG}"
+    ENVIRONMENT: $CI_COMMIT_REF_SLUG
+  environment:
+    name: $CI_COMMIT_REF_SLUG
+  only:
+    refs:
+      - branches
+  except:
+    - main
+  tags:
+    - dev
+    - mll
+
+tf-validate:prod:
+  extends: .tf_validate
+  stage: validate
+  variables:
+    TF_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_PROJECT_NAME}-${CI_COMMIT_REF_SLUG}-prod"
+    ENVIRONMENT: prod
+    TF_VAR_aws_account_number: $AWS_ACCOUNT_NUMBER_PROD
+    TF_VAR_aws_deployment_role: $AWS_DEPLOYMENT_ROLE_PROD
+    RUNNER_ROLE: "arn:aws:iam::$AWS_ACCOUNT_NUMBER_PROD:role/$AWS_DEPLOYMENT_ROLE_PROD"
+  environment:
+    name: prod
+  only:
+    refs:
+      - main
+  tags:
+    - prod
+    - mll
+
+tf-plan:non-prod:
+  extends: .tf_plan
+  stage: plan
+  variables:
+    TF_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_PROJECT_NAME}-${CI_COMMIT_REF_SLUG}"
+    ENVIRONMENT: $CI_COMMIT_REF_SLUG
+  environment:
+    name: $CI_COMMIT_REF_SLUG
+  artifacts:
+    name: plan
+    reports:
+      terraform: ${TF_ROOT}/plan.json
+    paths:
+      - ${TF_ROOT}/../../src
+      - ${TF_ROOT}/plan.cache
+  only:
+    refs:
+      - branches
+  except:
+    - main
+  tags:
+    - dev
+    - mll
+
+tf-plan:prod:
+  extends: .tf_plan
+  stage: plan
+  variables:
+    TF_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_PROJECT_NAME}-${CI_COMMIT_REF_SLUG}-prod"
+    ENVIRONMENT: prod
+    TF_VAR_aws_account_number: $AWS_ACCOUNT_NUMBER_PROD
+    TF_VAR_aws_deployment_role: $AWS_DEPLOYMENT_ROLE_PROD
+    RUNNER_ROLE: "arn:aws:iam::$AWS_ACCOUNT_NUMBER_PROD:role/$AWS_DEPLOYMENT_ROLE_PROD"
+  environment:
+    name: prod
+  artifacts:
+    name: plan
+    reports:
+      terraform: ${TF_ROOT}/plan.json
+    paths:
+      - ${TF_ROOT}/../../src
+      - ${TF_ROOT}/plan.cache
+  only:
+    refs:
+      - main
+  tags:
+    - prod
+    - mll
+
+tf-deploy:non-prod:
+  extends: .tf_deploy
+  stage: deploy-infra
+  variables:
+    TF_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_PROJECT_NAME}-${CI_COMMIT_REF_SLUG}"
+    ENVIRONMENT: $CI_COMMIT_REF_SLUG
+  dependencies:
+    - tf-plan:non-prod
+  environment:
+    name: $CI_COMMIT_REF_SLUG
+  only:
+    refs:
+      - branches
+  except:
+    - main
+  tags:
+    - dev
+    - mll
+
+tf-deploy:prod:
+  extends: .tf_deploy
+  stage: deploy-infra
+  variables:
+    TF_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_PROJECT_NAME}-${CI_COMMIT_REF_SLUG}-prod"
+    ENVIRONMENT: prod
+    TF_VAR_aws_account_number: $AWS_ACCOUNT_NUMBER_PROD
+    TF_VAR_aws_deployment_role: $AWS_DEPLOYMENT_ROLE_PROD
+    RUNNER_ROLE: "arn:aws:iam::$AWS_ACCOUNT_NUMBER_PROD:role/$AWS_DEPLOYMENT_ROLE_PROD"
+  dependencies:
+    - tf-plan:non-prod
+  environment:
+    name: prod
+  only:
+    refs:
+      - main
+  tags:
+    - prod
+    - mll
+
+#Create Preprocesing Docker Container
+build-preprocessing:non-prod:
+  stage: build
+  image: $DOCKER_IMAGE
+  needs:
+    - job: tf-deploy:non-prod
+  variables:
+     PROCESSING_IMAGE_NAME: $PROCESSING_IMAGE_NAME
+     PROCESSING_FOLDER: $CI_PROJECT_DIR/docker/processing/
+  environment:
+    name: $CI_COMMIT_REF_SLUG
+  services:
+    - docker:dind
+  before_script:
+    - apk add docker-cli
+  script: 
+    - cd scripts/
+    - sh ./build_and_push.sh $PROCESSING_IMAGE_NAME $PROCESSING_FOLDER
+  only:
+    refs:
+      - branches
+    changes:
+      - docker/processing/Dockerfile
+  except:
+    - main
+  tags:
+    - dev
+    - mll
+
+build-preprocessing:prod:
+  stage: build
+  image: $DOCKER_IMAGE
+  needs:
+    - job: tf-deploy:prod
+  variables:
+    PROCESSING_IMAGE_NAME: $PROCESSING_IMAGE_NAME
+    PROCESSING_FOLDER: $CI_PROJECT_DIR/docker/processing/
+    TF_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_PROJECT_NAME}-${CI_COMMIT_REF_SLUG}-prod"
+    ENVIRONMENT: prod
+    TF_VAR_aws_account_number: $AWS_ACCOUNT_NUMBER_PROD
+    TF_VAR_aws_deployment_role: $AWS_DEPLOYMENT_ROLE_PROD
+    RUNNER_ROLE: "arn:aws:iam::$AWS_ACCOUNT_NUMBER_PROD:role/$AWS_DEPLOYMENT_ROLE_PROD"
+  environment:
+    name: $CI_COMMIT_REF_SLUG
+  services:
+    - docker:dind
+  before_script:
+    - apk add docker-cli
+  script:
+    - cd scripts/
+    - sh ./build_and_push.sh $PROCESSING_IMAGE_NAME $PROCESSING_FOLDER
+  only:
+    refs:
+      - main
+    changes:
+      - docker/processing/Dockerfile
+  tags:
+    - prod
+    - mll
+    
+#Create Training Docker Container
+build-training:non-prod:
+  stage: build
+  image: $DOCKER_IMAGE
+  needs:
+    - job: tf-deploy:non-prod
+  variables:
+     TRAINING_IMAGE_NAME: $TRAINING_IMAGE_NAME
+     TRAINING_FOLDER: $CI_PROJECT_DIR/docker/training/
+  environment:
+    name: ${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}
+  services:
+    - docker:dind
+  before_script:
+    - apk add docker-cli
+  script: 
+    - cd scripts/
+    - sh ./build_and_push.sh $TRAINING_IMAGE_NAME $TRAINING_FOLDER
+  only:
+    refs:
+      - branches
+    changes:
+      - docker/training/Dockerfile
+  except:
+    - main
+  tags:
+    - dev
+    - mll
+
+build-training:prod:
+  stage: build
+  image: $DOCKER_IMAGE
+  needs:
+    - job: tf-deploy:prod
+  variables:
+    TRAINING_IMAGE_NAME: $TRAINING_IMAGE_NAME
+    TRAINING_FOLDER: $CI_PROJECT_DIR/docker/training/
+    TF_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_PROJECT_NAME}-${CI_COMMIT_REF_SLUG}-prod"
+    ENVIRONMENT: prod
+    TF_VAR_aws_account_number: $AWS_ACCOUNT_NUMBER_PROD
+    TF_VAR_aws_deployment_role: $AWS_DEPLOYMENT_ROLE_PROD
+    RUNNER_ROLE: "arn:aws:iam::$AWS_ACCOUNT_NUMBER_PROD:role/$AWS_DEPLOYMENT_ROLE_PROD"
+  environment:
+    name: ${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}
+  services:
+    - docker:dind
+  before_script:
+    - apk add docker-cli
+  script:
+    - cd scripts/
+    - sh ./build_and_push.sh $TRAINING_IMAGE_NAME $TRAINING_FOLDER
+  only:
+    refs:
+      - main
+    changes:
+      - docker/training/Dockerfile
+  tags:
+    - prod
+    - mll
+
+#Create/Update Sagemaker Pipeline CDK
+create-pipeline:non-prod:
+  stage: create
+  image: python:3.9-slim
+  #needs:
+  #  - job: build-preprocessing:non-prod
+  #  - job: build-training:non-prod
+  variables:
+    BUCKET_NAME: $AWS_BUCKET_NAME-$TF_VAR_branch-$TF_VAR_aws_account_number
+  environment:
+    name: ${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}-1
+  script: 
+    - pip install --upgrade pip
+    - pip install -r $CI_PROJECT_DIR/requirements.txt
+    - aws configure set region $TF_VAR_aws_region
+    - python3 $CI_PROJECT_DIR/scripts/submit_pipeline.py
+  only:
+    refs:
+      - branches
+    changes:
+      - cfg/model_build.yaml
+      - src/model_build/*
+  except:
+    - main
+  tags:
+    - dev
+    - mll
+
+create-pipeline:prod:
+  stage: create
+  image: python:3.9-slim
+  #needs:
+  #  - job: build-preprocessing:prod
+  #  - job: build-training:prod
+  variables:
+    BUCKET_NAME: $AWS_BUCKET_NAME-$TF_VAR_branch-$TF_VAR_aws_account_number
+    TF_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_PROJECT_NAME}-${CI_COMMIT_REF_SLUG}-prod"
+    ENVIRONMENT: prod
+    TF_VAR_aws_account_number: $AWS_ACCOUNT_NUMBER_PROD
+    TF_VAR_aws_deployment_role: $AWS_DEPLOYMENT_ROLE_PROD
+    RUNNER_ROLE: "arn:aws:iam::$AWS_ACCOUNT_NUMBER_PROD:role/$AWS_DEPLOYMENT_ROLE_PROD"
+  environment:
+    name: ${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}-2
+  script:
+    - pip install --upgrade pip
+    - pip install -r $CI_PROJECT_DIR/requirements.txt
+    - aws configure set region $TF_VAR_aws_region
+    - python3 $CI_PROJECT_DIR/scripts/submit_pipeline.py
+  only:
+    refs:
+      - main
+    changes:
+      - cfg/model_build.yaml
+      - src/model_build/*
+  tags:
+    - prod
+    - mll
+    
+#Run Sagemaker Pipeline CDK
+run-pipeline:non-prod:
+  stage: train
+  image: python:3.9-slim
+  variables:
+    BUCKET_NAME: $AWS_BUCKET_NAME-$TF_VAR_branch-$TF_VAR_aws_account_number
+  #needs:
+  #  - job: create-pipeline:non-prod
+  environment:
+    name: ${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}-3
+  script: 
+    - pip install --upgrade pip
+    - pip install -r $CI_PROJECT_DIR/requirements.txt
+    - aws configure set region $TF_VAR_aws_region
+    - python3 $CI_PROJECT_DIR/scripts/submit_pipeline.py --run-execution
+  timeout: 7 hours 00 minutes
+  only:
+    refs:
+      - branches
+  except:
+    - main
+  tags:
+    - dev
+    - mll
+
+run-pipeline:prod:
+  stage: train
+  image: python:3.9-slim
+  variables:
+    BUCKET_NAME: $AWS_BUCKET_NAME-$TF_VAR_branch-$TF_VAR_aws_account_number
+    TF_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_PROJECT_NAME}-${CI_COMMIT_REF_SLUG}-prod"
+    ENVIRONMENT: prod
+    TF_VAR_aws_account_number: $AWS_ACCOUNT_NUMBER_PROD
+    TF_VAR_aws_deployment_role: $AWS_DEPLOYMENT_ROLE_PROD
+    RUNNER_ROLE: "arn:aws:iam::$AWS_ACCOUNT_NUMBER_PROD:role/$AWS_DEPLOYMENT_ROLE_PROD"
+  #needs:
+  #  - job: create-pipeline:prod
+  environment:
+    name: ${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}-4
+  script:
+    - pip install --upgrade pip
+    - pip install -r $CI_PROJECT_DIR/requirements.txt
+    - aws configure set region $TF_VAR_aws_region
+    - python3 $CI_PROJECT_DIR/scripts/submit_pipeline.py --run-execution
+  timeout: 7 hours 00 minutes
+  only:
+    refs:
+      - main
+  except:
+    - main
+  tags:
+    - prod
+    - mll
+ 
+#Create Testing Endpoint CDK
+create-testing-endpoint:non-prod:
+  stage: test
+  image: python:3.9-slim
+#  needs:
+#    - job: run-pipeline:non-prod
+  environment:
+    name: $CI_COMMIT_REF_SLUG
+  before_script: 
+    - apt-get update && apt-get install -y gcc git && apt-get -y install sudo  && apt-get clean
+    - sudo apt-get install -y curl
+    - curl --silent --location https://deb.nodesource.com/setup_16.x |sudo bash -
+    - sudo apt-get install -y nodejs
+    - sudo npm install -g aws-cdk@2.41.0
+  script: 
+    - pip install --upgrade pip
+    - pip install -r $CI_PROJECT_DIR/requirements.txt
+    - aws configure set region $TF_VAR_aws_region
+    - cd scripts/
+    - sh ./deploy_stack.sh $DEPLOYMENT_FOLDER staging
+  only:
+    refs:
+      - branches
+  except:
+    - main
+  tags:
+    - dev
+    - mll
+
+#Create Testing Endpoint CDK
+create-testing-endpoint:prod:
+  stage: test
+  image: python:3.9-slim
+  variables:
+    TF_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_PROJECT_NAME}-${CI_COMMIT_REF_SLUG}-prod"
+    ENVIRONMENT: prod
+    TF_VAR_aws_account_number: $AWS_ACCOUNT_NUMBER_PROD
+    TF_VAR_aws_deployment_role: $AWS_DEPLOYMENT_ROLE_PROD
+    RUNNER_ROLE: "arn:aws:iam::$AWS_ACCOUNT_NUMBER_PROD:role/$AWS_DEPLOYMENT_ROLE_PROD"
+#  needs:
+#    - job: run-pipeline:prod
+  environment:
+    name: $CI_COMMIT_REF_SLUG
+  before_script:
+    - apt-get update && apt-get install -y gcc git && apt-get -y install sudo  && apt-get clean
+    - sudo apt-get install -y curl
+    - curl --silent --location https://deb.nodesource.com/setup_16.x |sudo bash -
+    - sudo apt-get install -y nodejs
+    - sudo npm install -g aws-cdk@2.41.0
+  script:
+    - pip install --upgrade pip
+    - pip install -r $CI_PROJECT_DIR/requirements.txt
+    - aws configure set region $TF_VAR_aws_region
+    - cd scripts/
+    - sh ./deploy_stack.sh $DEPLOYMENT_FOLDER staging
+  only:
+    refs:
+      - main
+  tags:
+    - prod
+    - mll
+    
+#Test Staging Endpoint
+testing-staging-endpoint:non-prod:
+  stage: test
+  image: python:3.9-slim
+  needs: 
+    - job: create-testing-endpoint:non-prod
+  variables: 
+    DEPLOYMENT_ENV: staging
+  environment:
+    name: ${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}
+  script: 
+    - pip install --upgrade pip
+    - pip install -r $CI_PROJECT_DIR/test/requirements.txt
+    - aws configure set region $TF_VAR_aws_region
+    - python $CI_PROJECT_DIR/test/test_endpoint.py
+    - echo API TEST SUCCESSFUL
+  only:
+    refs:
+      - branches
+  except:
+    - main
+  tags:
+    - dev
+    - mll
+
+testing-staging-endpoint:prod:
+  stage: test
+  image: python:3.9-slim
+  needs:
+    - job: create-testing-endpoint:prod
+  variables:
+    DEPLOYMENT_ENV: staging
+    TF_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_PROJECT_NAME}-${CI_COMMIT_REF_SLUG}-prod"
+    ENVIRONMENT: prod
+    TF_VAR_aws_account_number: $AWS_ACCOUNT_NUMBER_PROD
+    TF_VAR_aws_deployment_role: $AWS_DEPLOYMENT_ROLE_PROD
+    RUNNER_ROLE: "arn:aws:iam::$AWS_ACCOUNT_NUMBER_PROD:role/$AWS_DEPLOYMENT_ROLE_PROD"
+  environment:
+    name: ${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}
+  script:
+    - pip install --upgrade pip
+    - pip install -r $CI_PROJECT_DIR/test/requirements.txt
+    - aws configure set region $TF_VAR_aws_region
+    - python $CI_PROJECT_DIR/test/test_endpoint.py
+    - echo API TEST SUCCESSFUL
+  only:
+    refs:
+      - main
+  tags:
+    - prod
+    - mll
+
+#De-register auto-scaling for Testing Endpoint
+deregister-staging-autoscaling:non-prod:
+  stage: scaling
+  image: python:3.9-slim
+  needs:
+    - job: testing-staging-endpoint:non-prod
+  variables:
+    ENVIRONMENT: $CI_COMMIT_REF_SLUG
+    DEPLOYMENT_ENV: staging
+  environment:
+    name: $CI_COMMIT_REF_SLUG
+  script:
+    - pip install --upgrade pip
+    - pip install -r $CI_PROJECT_DIR/test/requirements.txt
+    - aws configure set region $TF_VAR_aws_region
+    - python $CI_PROJECT_DIR/src/autoscaling/deregister.py
+  allow_failure: true
+  only:
+    refs:
+      - branches
+  except:
+    - main
+  tags:
+    - dev
+    - mll
+
+deregister-staging-autoscaling:prod:
+  stage: scaling
+  image: python:3.9-slim
+  needs:
+    - job: testing-staging-endpoint:prod
+  variables:
+    DEPLOYMENT_ENV: staging
+    TF_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_PROJECT_NAME}-${CI_COMMIT_REF_SLUG}-prod"
+    ENVIRONMENT: prod
+    TF_VAR_aws_account_number: $AWS_ACCOUNT_NUMBER_PROD
+    TF_VAR_aws_deployment_role: $AWS_DEPLOYMENT_ROLE_PROD
+    RUNNER_ROLE: "arn:aws:iam::$AWS_ACCOUNT_NUMBER_PROD:role/$AWS_DEPLOYMENT_ROLE_PROD"
+  environment:
+    name: $CI_COMMIT_REF_SLUG
+  script:
+    - pip install --upgrade pip
+    - pip install -r $CI_PROJECT_DIR/test/requirements.txt
+    - aws configure set region $TF_VAR_aws_region
+    - python $CI_PROJECT_DIR/src/autoscaling/deregister.py
+  allow_failure: true
+  only:
+    refs:
+      - main
+  tags:
+    - prod
+    - mll
+
+#Registering auto-scaling for Testing Endpoint
+register-staging-autoscaling:non-prod:
+  stage: scaling
+  image: python:3.9-slim
+  needs:
+    - job: deregister-staging-autoscaling:non-prod
+  variables:
+    ENVIRONMENT: ${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}
+    DEPLOYMENT_ENV: staging
+  script:
+    - pip install --upgrade pip
+    - pip install -r $CI_PROJECT_DIR/test/requirements.txt
+    - aws configure set region $TF_VAR_aws_region
+    - python $CI_PROJECT_DIR/src/autoscaling/register.py
+  only:
+    refs:
+      - branches
+  except:
+    - main
+  tags:
+    - dev
+    - mll
+
+register-staging-autoscaling:prod:
+  stage: scaling
+  image: python:3.9-slim
+  needs:
+    - job: deregister-staging-autoscaling:prod
+  variables:
+    DEPLOYMENT_ENV: staging
+    TF_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_PROJECT_NAME}-${CI_COMMIT_REF_SLUG}-prod"
+    ENVIRONMENT: prod-${CI_COMMIT_SHORT_SHA}
+    TF_VAR_aws_account_number: $AWS_ACCOUNT_NUMBER_PROD
+    TF_VAR_aws_deployment_role: $AWS_DEPLOYMENT_ROLE_PROD
+    RUNNER_ROLE: "arn:aws:iam::$AWS_ACCOUNT_NUMBER_PROD:role/$AWS_DEPLOYMENT_ROLE_PROD"
+  script:
+    - pip install --upgrade pip
+    - pip install -r $CI_PROJECT_DIR/test/requirements.txt
+    - aws configure set region $TF_VAR_aws_region
+    - python $CI_PROJECT_DIR/src/autoscaling/register.py
+  only:
+    refs:
+      - main
+  tags:
+    - prod
+    - mll
+    
+#Deploy Production Endpoint CDK
+create-production-endpoint:non-prod:
+  stage: deploy
+  image: python:3.9-slim
+  environment:
+    name: $CI_COMMIT_REF_SLUG
+  before_script: 
+    - apt-get update && apt-get install -y gcc git && apt-get -y install sudo  && apt-get clean
+    - sudo apt-get install -y curl
+    - curl --silent --location https://deb.nodesource.com/setup_16.x |sudo bash -
+    - sudo apt-get install -y nodejs
+    - sudo npm install -g aws-cdk@2.41.0
+  script: 
+    - pip install --upgrade pip
+    - pip install -r $CI_PROJECT_DIR/requirements.txt
+    - aws configure set region $TF_VAR_aws_region
+    - cd scripts/
+    - sh ./deploy_stack.sh $DEPLOYMENT_FOLDER prod
+  only:
+    refs:
+      - branches
+  except:
+    - main
+  tags:
+    - dev
+    - mll
+
+create-production-endpoint:prod:
+  stage: deploy
+  image: python:3.9-slim
+  variables:
+    TF_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_PROJECT_NAME}-${CI_COMMIT_REF_SLUG}-prod"
+    ENVIRONMENT: prod
+    TF_VAR_aws_account_number: $AWS_ACCOUNT_NUMBER_PROD
+    TF_VAR_aws_deployment_role: $AWS_DEPLOYMENT_ROLE_PROD
+    RUNNER_ROLE: "arn:aws:iam::$AWS_ACCOUNT_NUMBER_PROD:role/$AWS_DEPLOYMENT_ROLE_PROD"
+  environment:
+    name: $CI_COMMIT_REF_SLUG
+  before_script:
+    - apt-get update && apt-get install -y gcc git && apt-get -y install sudo  && apt-get clean
+    - sudo apt-get install -y curl
+    - curl --silent --location https://deb.nodesource.com/setup_16.x |sudo bash -
+    - sudo apt-get install -y nodejs
+    - sudo npm install -g aws-cdk@2.41.0
+  script:
+    - pip install --upgrade pip
+    - pip install -r $CI_PROJECT_DIR/requirements.txt
+    - aws configure set region $TF_VAR_aws_region
+    - cd scripts/
+    - sh ./deploy_stack.sh $DEPLOYMENT_FOLDER prod
+  only:
+    refs:
+      - main
+  tags:
+    - prod
+    - mll
+
+##Push container structure into the bucket
+#push-container-structure:non-prod:
+#  stage: deploy
+#  image: python:3.9-slim
+#  needs:
+#    - job: create-production-endpoint:non-prod
+#  variables:
+#    ENVIRONMENT: ${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}-1
+#    BUCKET_NAME: $AWS_BUCKET_NAME-$TF_VAR_branch-$TF_VAR_aws_account_number
+#    PREFIX_NAME: "versions"
+#    FILENAME: "container"
+#  script:
+#    - pip install --upgrade pip
+#    - pip install -r $CI_PROJECT_DIR/test/requirements.txt
+#    - aws configure set region $TF_VAR_aws_region
+#    - python $CI_PROJECT_DIR/scripts/push_container_structure.py
+#  only:
+#    refs:
+#      - branches
+#  except:
+#    - main
+#  tags:
+#    - dev
+#    - mll
+
+#push-container-structure:prod:
+#  stage: deploy
+#  image: python:3.9-slim
+#  needs:
+#    - job: create-production-endpoint:prod
+#  variables:
+#    BUCKET_NAME: $AWS_BUCKET_NAME-$TF_VAR_branch-$TF_VAR_aws_account_number
+#    PREFIX_NAME: "versions"
+#    FILENAME: "container"
+#    TF_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_PROJECT_NAME}-${CI_COMMIT_REF_SLUG}-prod"
+#    ENVIRONMENT: prod-${CI_COMMIT_SHORT_SHA}-1
+#    TF_VAR_aws_account_number: $AWS_ACCOUNT_NUMBER_PROD
+#    TF_VAR_aws_deployment_role: $AWS_DEPLOYMENT_ROLE_PROD
+#    RUNNER_ROLE: "arn:aws:iam::$AWS_ACCOUNT_NUMBER_PROD:role/$AWS_DEPLOYMENT_ROLE_PROD"
+#  script:
+#    - pip install --upgrade pip
+#    - pip install -r $CI_PROJECT_DIR/test/requirements.txt
+#    - aws configure set region $TF_VAR_aws_region
+#    - python $CI_PROJECT_DIR/scripts/push_container_structure.py
+#  only:
+#    refs:
+#      - main
+#  tags:
+#    - prod
+#    - mll
+
+#De-register auto-scaling for Production Endpoint
+deregister-production-autoscaling:non-prod:
+  stage: deploy
+  image: python:3.9-slim
+  needs:
+    - job: create-production-endpoint:non-prod
+  variables:
+    ENVIRONMENT: ${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}-2
+    DEPLOYMENT_ENV: prod
+  environment:
+    name: $CI_COMMIT_REF_SLUG
+  script:
+    - pip install --upgrade pip
+    - pip install -r $CI_PROJECT_DIR/test/requirements.txt
+    - aws configure set region $TF_VAR_aws_region
+    - python $CI_PROJECT_DIR/src/autoscaling/deregister.py
+  allow_failure: true
+  only:
+    refs:
+      - branches
+  except:
+    - main
+  tags:
+    - dev
+    - mll
+
+deregister-production-autoscaling:prod:
+  stage: deploy
+  image: python:3.9-slim
+  needs:
+    - job: create-production-endpoint:prod
+  variables:
+    ENVIRONMENT: prod-${CI_COMMIT_SHORT_SHA}-2
+    DEPLOYMENT_ENV: prod
+    TF_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_PROJECT_NAME}-${CI_COMMIT_REF_SLUG}-prod"
+    TF_VAR_aws_account_number: $AWS_ACCOUNT_NUMBER_PROD
+    TF_VAR_aws_deployment_role: $AWS_DEPLOYMENT_ROLE_PROD
+    RUNNER_ROLE: "arn:aws:iam::$AWS_ACCOUNT_NUMBER_PROD:role/$AWS_DEPLOYMENT_ROLE_PROD"
+  environment:
+    name: $CI_COMMIT_REF_SLUG
+  script:
+    - pip install --upgrade pip
+    - pip install -r $CI_PROJECT_DIR/test/requirements.txt
+    - aws configure set region $TF_VAR_aws_region
+    - python $CI_PROJECT_DIR/src/autoscaling/deregister.py
+  allow_failure: true
+  only:
+    refs:
+      - main
+  tags:
+    - prod
+    - mll
+
+#Registering auto-scaling for Production Endpoint
+register-production-autoscaling:non-prod:
+  stage: deploy
+  image: python:3.9-slim
+  needs:
+    - job: deregister-production-autoscaling:non-prod
+  variables:
+    ENVIRONMENT: ${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}-3
+    DEPLOYMENT_ENV: prod
+  script:
+    - pip install --upgrade pip
+    - pip install -r $CI_PROJECT_DIR/test/requirements.txt
+    - aws configure set region $TF_VAR_aws_region
+    - python $CI_PROJECT_DIR/src/autoscaling/register.py
+  only:
+    refs:
+      - branches
+  except:
+    - main
+  tags:
+    - dev
+    - mll
+
+register-production-autoscaling:prod:
+  stage: deploy
+  image: python:3.9-slim
+  needs:
+    - job: deregister-production-autoscaling:prod
+  variables:
+    ENVIRONMENT: prod-${CI_COMMIT_SHORT_SHA}-3
+    DEPLOYMENT_ENV: prod
+    TF_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_PROJECT_NAME}-${CI_COMMIT_REF_SLUG}-prod"
+    TF_VAR_aws_account_number: $AWS_ACCOUNT_NUMBER_PROD
+    TF_VAR_aws_deployment_role: $AWS_DEPLOYMENT_ROLE_PROD
+    RUNNER_ROLE: "arn:aws:iam::$AWS_ACCOUNT_NUMBER_PROD:role/$AWS_DEPLOYMENT_ROLE_PROD"
+  script:
+    - pip install --upgrade pip
+    - pip install -r $CI_PROJECT_DIR/test/requirements.txt
+    - aws configure set region $TF_VAR_aws_region
+    - python $CI_PROJECT_DIR/src/autoscaling/register.py
+  only:
+    refs:
+      - main
+  tags:
+    - prod
+    - mll

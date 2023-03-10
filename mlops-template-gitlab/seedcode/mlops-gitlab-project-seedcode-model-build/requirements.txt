@@ -1,0 +1,10 @@
+aws-cdk-lib==2.42.0
+awscli
+boto3
+constructs==10.1.96
+mlflow==1.30.0
+pyyaml
+sagemaker==2.105.0
+s3transfer<0.6.0
+pyathena==2.14.0
+s3fs==0.4.2

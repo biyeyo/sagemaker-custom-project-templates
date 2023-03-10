@@ -1,0 +1,121 @@
+# make usage of terraform pipeline provided by the enablers team
+include:
+  - project: templates/infra-pipelines
+    #ref: tf-1.1
+    ref: tf-1.2
+    file:
+      - terraform-gitlab-pipeline.yml
+
+variables:
+  TF_VAR_aws_account_number: $AWS_ACCOUNT_NUMBER_DEV # AWS account number. mostly non-prod. Gets overwritten for prod jobs
+  TF_VAR_aws_deployment_role: $AWS_DEPLOYMENT_ROLE_DEV # use gitlab-runner
+  TF_VAR_branch: $CI_COMMIT_REF_SLUG
+  TF_VAR_model_bucket_name: $AWS_BUCKET_NAME-$CI_COMMIT_REF_SLUG-$AWS_ACCOUNT_NUMBER_DEV
+  TF_VAR_short_ref: $CI_COMMIT_SHORT_SHA-$CI_PIPELINE_ID  # short commit reference
+stages:
+  - init
+  - validate
+  - plan
+  - deploy
+
+# Init terraform
+init:non-prod:
+  extends: .tf_init
+  stage: init
+  variables:
+    TF_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_PROJECT_NAME}-${CI_COMMIT_REF_SLUG}"
+    ENVIRONMENT: $CI_COMMIT_REF_SLUG
+  only:
+    refs:
+      - branches
+  except:
+    - main
+  tags:
+    - dev
+    - mll
+
+validate:non-prod:
+  extends: .tf_validate
+  stage: validate
+  variables:
+    TF_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_PROJECT_NAME}-${CI_COMMIT_REF_SLUG}"
+    ENVIRONMENT: $CI_COMMIT_REF_SLUG
+  environment:
+    name: $CI_COMMIT_REF_SLUG
+  only:
+    refs:
+      - branches
+  except:
+    - main
+  tags:
+    - dev
+    - mll
+
+plan:non-prod:
+  extends: .tf_plan
+  stage: plan
+  variables:
+    TF_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_PROJECT_NAME}-${CI_COMMIT_REF_SLUG}"
+    ENVIRONMENT: $CI_COMMIT_REF_SLUG
+  environment:
+    name: $CI_COMMIT_REF_SLUG
+  artifacts:
+    name: plan
+    reports:
+      terraform: ${TF_ROOT}/plan.json
+    paths:
+      - ${TF_ROOT}/../../src
+      - ${TF_ROOT}/plan.cache
+  only:
+    refs:
+      - branches
+  except:
+    - main
+  tags:
+    - dev
+    - mll
+
+deploy:non-prod:
+  extends: .tf_base
+  stage: deploy
+  variables:
+    TF_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_PROJECT_NAME}-${CI_COMMIT_REF_SLUG}"
+    ENVIRONMENT: $CI_COMMIT_REF_SLUG
+  needs:
+    - plan:non-prod
+  environment:
+    name: $CI_COMMIT_REF_SLUG
+    on_stop: destroy:non-prod
+  cache:
+    paths:
+      - ${TF_ROOT}/.terraform
+  script:
+    - gitlab-terraform apply
+    - gitlab-terraform output
+  only:
+    refs:
+      - branches
+  except:
+    - main
+  tags:
+    - dev
+    - mll
+
+destroy:non-prod:
+  extends: .tf_destroy
+  stage: deploy
+  variables:
+    TF_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_PROJECT_NAME}-${CI_COMMIT_REF_SLUG}"
+    ENVIRONMENT: $CI_COMMIT_REF_SLUG
+  environment:
+    name: $CI_COMMIT_REF_SLUG
+  only:
+    refs:
+      - branches
+  except:
+    - main
+  when: manual
+  allow_failure: true
+  tags:
+    - dev
+    - mll
